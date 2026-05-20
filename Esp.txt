@@ -1,0 +1,231 @@
+-- ================= НАСТРОЙКИ =================
+local Settings = {
+    Enabled = true,
+    MaxDistance = 1000,
+    Thickness = 1,
+    CornerSize = 0.2, 
+    
+    DefaultColor = Color3.fromRGB(255, 255, 255),
+    White = Color3.fromRGB(255, 255, 255),
+}
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local Camera = workspace.CurrentCamera
+local LocalPlayer = Players.LocalPlayer
+
+-- Кэш функций
+local WorldToViewportPoint = Camera.WorldToViewportPoint
+local Vector2_new, Vector3_new = Vector2.new, Vector3.new
+local math_abs, math_floor, math_clamp, math_tan, math_rad = math.abs, math.floor, math.clamp, math.tan, math.rad
+
+-- ================= УЛУЧШЕННАЯ ЛОГИКА ПЛЕЙСОВ =================
+local function getPlayerStatus(player)
+    -- 1. САМАЯ ГЛАВНАЯ ПРОВЕРКА: WORLD "DEFAULT"
+    local worldAttr = player:GetAttribute("World")
+    if worldAttr == "default" then
+        return false, Settings.DefaultColor -- Игнорируем полностью
+    end
+
+    local isVisible = true
+    local color = Settings.DefaultColor
+    
+    -- 2. ЛОГИКА ДЛЯ СПЕЦИФИЧЕСКОГО ПЛЕЙСА
+    if game.PlaceId == 126042865144779 then
+        local myTeam = LocalPlayer:GetAttribute("Team")
+        local theirTeam = player:GetAttribute("Team")
+        
+        -- Ищем, есть ли на сервере хотя бы один реальный противник 
+        -- (не default мир и команда не как у нас)
+        local enemyExists = false
+        for _, p in pairs(Players:GetPlayers()) do
+            if p ~= LocalPlayer and p:GetAttribute("World") ~= "default" then
+                if p:GetAttribute("Team") ~= myTeam then
+                    enemyExists = true
+                    break
+                end
+            end
+        end
+
+        if enemyExists then
+            -- Если враги есть, показываем только тех, у кого команда ДРУГАЯ
+            isVisible = (myTeam ~= theirTeam)
+        else
+            -- Если врагов нет (все в одной команде) - показываем всех (кто не default)
+            isVisible = true
+        end
+        color = player.TeamColor.Color
+
+    -- 3. ЛОГИКА ДЛЯ ВТОРОГО ПЛЕЙСА (TEAMCOLOR)
+    elseif game.PlaceId == 5041144419 then
+        isVisible = true 
+        color = player.TeamColor.Color 
+    
+    -- 4. ОСТАЛЬНЫЕ ПЛЕЙСЫ
+    else
+        isVisible = true
+        color = Settings.DefaultColor
+    end
+    
+    return isVisible, color
+end
+
+-- ================= УПРАВЛЕНИЕ ОБЪЕКТАМИ =================
+local ESP_Data = {}
+
+local function createDrawing(class, props)
+    local obj = Drawing.new(class)
+    for k, v in pairs(props) do obj[k] = v end
+    return obj
+end
+
+local function removeESP(player)
+    if ESP_Data[player] then
+        local d = ESP_Data[player]
+        d.Head:Remove(); d.Name:Remove(); d.Dist:Remove()
+        d.HealthBack:Remove(); d.HealthMain:Remove()
+        for _, v in pairs(d.Box) do v:Remove() end
+        for _, v in pairs(d.BoxOutline) do v:Remove() end
+        for _, v in pairs(d.Skeleton) do v:Remove() end
+        ESP_Data[player] = nil
+    end
+end
+
+local function createESP(player)
+    local data = {
+        Box = {}, 
+        BoxOutline = {}, 
+        Skeleton = {},
+        HealthBack = createDrawing("Line", {Thickness = 3, Color = Color3.new(0,0,0), ZIndex = 1}),
+        HealthMain = createDrawing("Line", {Thickness = 1, ZIndex = 2}),
+        Head = createDrawing("Circle", {Thickness = 1, NumSides = 15}),
+        Name = createDrawing("Text", {Size = 13, Center = true, Outline = true, Font = 2}),
+        Dist = createDrawing("Text", {Size = 11, Center = true, Outline = true, Font = 2}),
+    }
+    for i=1, 8 do 
+        data.BoxOutline[i] = createDrawing("Line", {Thickness = 3, Color = Color3.new(0,0,0), ZIndex = 0})
+        data.Box[i] = createDrawing("Line", {Thickness = 1, ZIndex = 1}) 
+    end
+    for i=1, 15 do data.Skeleton[i] = createDrawing("Line", {Thickness = 1}) end
+    ESP_Data[player] = data
+end
+
+local function setVisibility(d, state)
+    d.Head.Visible = state; d.Name.Visible = state; d.Dist.Visible = state
+    d.HealthBack.Visible = state; d.HealthMain.Visible = state
+    for i=1, 8 do d.Box[i].Visible = state; d.BoxOutline[i].Visible = state end
+    for i=1, 15 do d.Skeleton[i].Visible = state end
+end
+
+local R15_Conns = {
+    {"Head", "NeckAttachment", "UpperTorso", "NeckAttachment"},
+    {"UpperTorso", "NeckAttachment", "UpperTorso", "WaistAttachment"},
+    {"UpperTorso", "WaistAttachment", "LowerTorso", "WaistAttachment"},
+    {"UpperTorso", "LeftShoulderAttachment", "LeftUpperArm", "LeftElbowAttachment"},
+    {"LeftUpperArm", "LeftElbowAttachment", "LeftLowerArm", "LeftWristAttachment"},
+    {"LeftLowerArm", "LeftWristAttachment", "LeftHand", "LeftWristAttachment"},
+    {"UpperTorso", "RightShoulderAttachment", "RightUpperArm", "RightElbowAttachment"},
+    {"RightUpperArm", "RightElbowAttachment", "RightLowerArm", "RightWristAttachment"},
+    {"RightLowerArm", "RightWristAttachment", "RightHand", "RightWristAttachment"},
+    {"LowerTorso", "LeftHipAttachment", "LeftUpperLeg", "LeftKneeAttachment"},
+    {"LeftUpperLeg", "LeftKneeAttachment", "LeftLowerLeg", "LeftAnkleAttachment"},
+    {"LeftLowerLeg", "LeftAnkleAttachment", "LeftFoot", "LeftAnkleAttachment"},
+    {"LowerTorso", "RightHipAttachment", "RightUpperLeg", "RightKneeAttachment"},
+    {"RightUpperLeg", "RightKneeAttachment", "RightLowerLeg", "RightAnkleAttachment"},
+    {"RightLowerLeg", "RightAnkleAttachment", "RightFoot", "RightAnkleAttachment"}
+}
+
+-- ================= ГЛАВНЫЙ ЦИКЛ =================
+RunService.RenderStepped:Connect(function()
+    local camCF = Camera.CFrame
+    local viewportSize = Camera.ViewportSize
+
+    for _, player in pairs(Players:GetPlayers()) do
+        if player == LocalPlayer then continue end
+        local char = player.Character
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        local hum = char and char:FindFirstChild("Humanoid")
+
+        -- Проверка статуса (видимость, World атрибут и цвет)
+        local isEnemy, pColor = getPlayerStatus(player)
+
+        if not (hrp and hum and hum.Health > 0 and isEnemy) then
+            if ESP_Data[player] then setVisibility(ESP_Data[player], false) end
+            continue
+        end
+
+        local distance = (hrp.Position - camCF.Position).Magnitude
+        local centerScreen, onScreen = WorldToViewportPoint(Camera, hrp.Position)
+
+        -- Проверка дистанции и нахождения за экраном
+        if distance > Settings.MaxDistance or centerScreen.Z <= 0 then
+            if ESP_Data[player] then setVisibility(ESP_Data[player], false) end
+            continue
+        end
+
+        if not ESP_Data[player] then createESP(player) end
+        local d = ESP_Data[player]
+
+        -- ================= МАТЕМАТИКА БОКСА =================
+        local fovFactor = math_tan(math_rad(Camera.FieldOfView / 2))
+        local screenHeight = (6 / (distance * fovFactor)) * (viewportSize.Y / 2)
+        local screenWidth = screenHeight * 0.55
+
+        local left = centerScreen.X - screenWidth / 2
+        local right = centerScreen.X + screenWidth / 2
+        local top = centerScreen.Y - screenHeight / 2
+        local bottom = centerScreen.Y + screenHeight / 2
+
+        -- ================= CORNER BOX + OUTLINE =================
+        local cs = screenWidth * Settings.CornerSize
+        local corners = {
+            {Vector2_new(left, top), Vector2_new(left + cs, top)}, {Vector2_new(left, top), Vector2_new(left, top + cs)},
+            {Vector2_new(right, top), Vector2_new(right - cs, top)}, {Vector2_new(right, top), Vector2_new(right, top + cs)},
+            {Vector2_new(left, bottom), Vector2_new(left + cs, bottom)}, {Vector2_new(left, bottom), Vector2_new(left, bottom - cs)},
+            {Vector2_new(right, bottom), Vector2_new(right - cs, bottom)}, {Vector2_new(right, bottom), Vector2_new(right, bottom - cs)}
+        }
+
+        for i, pts in ipairs(corners) do
+            d.BoxOutline[i].From = pts[1]; d.BoxOutline[i].To = pts[2]; d.BoxOutline[i].Visible = true
+            d.Box[i].From = pts[1]; d.Box[i].To = pts[2]; d.Box[i].Color = pColor; d.Box[i].Visible = true
+        end
+
+        -- Здоровье
+        local healthScale = math_clamp(hum.Health / hum.MaxHealth, 0, 1)
+        d.HealthBack.Visible = true; d.HealthBack.From = Vector2_new(left - 5, bottom); d.HealthBack.To = Vector2_new(left - 5, top)
+        d.HealthMain.Visible = true; d.HealthMain.From = Vector2_new(left - 5, bottom); d.HealthMain.To = Vector2_new(left - 5, bottom - (screenHeight * healthScale))
+        d.HealthMain.Color = Color3.fromRGB(255,0,0):Lerp(Color3.fromRGB(0,255,0), healthScale)
+
+        -- Текст
+        local dynSize = math_clamp(13 * (100/distance), 9, 13)
+        d.Name.Visible = true; d.Name.Text = player.Name; d.Name.Color = pColor; d.Name.Position = Vector2_new(centerScreen.X, top - 15); d.Name.Size = dynSize
+        d.Dist.Visible = true; d.Dist.Text = math_floor(distance).."m"; d.Dist.Color = Settings.White; d.Dist.Position = Vector2_new(centerScreen.X, bottom + 5); d.Dist.Size = dynSize
+
+        -- Голова
+        local headPart = char:FindFirstChild("Head")
+        if headPart then
+            local headPos, hOn = WorldToViewportPoint(Camera, headPart.Position)
+            if hOn and headPos.Z > 0 then
+                d.Head.Radius = math_clamp((0.45 / (distance * fovFactor)) * (viewportSize.Y / 2), 1, 15)
+                d.Head.Position = Vector2_new(headPos.X, headPos.Y); d.Head.Color = pColor; d.Head.Visible = true
+            else d.Head.Visible = false end
+        end
+
+        -- Скелет
+        local conns = (hum.RigType == Enum.HumanoidRigType.R15) and R15_Conns or {{"Head", nil, "Torso", nil}, {"Torso", nil, "Left Arm", nil}, {"Torso", nil, "Right Arm", nil}, {"Torso", nil, "Left Leg", nil}, {"Torso", nil, "Right Leg", nil}}
+        for i, c in ipairs(conns) do
+            local p1, p2 = char:FindFirstChild(c[1]), char:FindFirstChild(c[3] or c[2])
+            if p1 and p2 then
+                local w1 = (c[2] and p1:FindFirstChild(c[2]) and p1[c[2]].WorldPosition or p1.Position)
+                local w2 = (c[4] and p2:FindFirstChild(c[4]) and p2[c[4]].WorldPosition or p2.Position)
+                local s1, os1 = WorldToViewportPoint(Camera, w1)
+                local s2, os2 = WorldToViewportPoint(Camera, w2)
+                if os1 and os2 and s1.Z > 0 and s2.Z > 0 then
+                    d.Skeleton[i].From = Vector2_new(s1.X, s1.Y); d.Skeleton[i].To = Vector2_new(s2.X, s2.Y); d.Skeleton[i].Color = pColor; d.Skeleton[i].Visible = true
+                else d.Skeleton[i].Visible = false end
+            end
+        end
+    end
+end)
+
+Players.PlayerRemoving:Connect(removeESP)
